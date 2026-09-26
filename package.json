@@ -1,0 +1,16 @@
+{
+  "name": "vercel-to-yandex-cloud",
+  "version": "1.0.0",
+  "description": "Перенос проектов Vercel в Yandex Cloud Object Storage и контроль актуальности копий",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "status": "node src/cli.js status",
+    "update-outdated": "node src/cli.js update-outdated",
+    "test": "node --test test/s3.test.js test/util.test.js test/overview.test.js test/build.test.js test/vercel.test.js test/sync.test.js"
+  }
+}

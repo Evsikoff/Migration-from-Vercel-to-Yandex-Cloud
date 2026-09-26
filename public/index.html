@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="session" content="__SESSION__">
+  <title>Vercel → Yandex Cloud</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M9 7 16 19H2z" fill="currentColor"/><path d="M17 13h7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="m21.5 10 3 3-3 3" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M19 26a4 4 0 0 1 .4-8 5 5 0 0 1 9.4 1.6A3.2 3.2 0 0 1 28 26z" fill="var(--accent)"/></svg>
+      <div>
+        <div class="brand-title">Vercel → Yandex Cloud</div>
+        <div class="brand-sub">копии проектов и их актуальность</div>
+      </div>
+    </div>
+    <div class="conn" id="conn"></div>
+    <div class="top-actions">
+      <button class="btn" id="refreshBtn" type="button" title="Заново прочитать проекты Vercel и бакеты Yandex Cloud">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 10a6 6 0 1 1-1.8-4.3M16 3.5V7h-3.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>Проверить</span>
+      </button>
+      <button class="btn" id="settingsBtn" type="button">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 12.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M16.2 11.9 17.5 10l-1.3-1.9.3-2.3-2.2-.9-.9-2.2-2.3.3L10 1.7 8.1 3l-2.3-.3-.9 2.2-2.2.9.3 2.3L1.7 10 3 11.9l-.3 2.3 2.2.9.9 2.2 2.3-.3 1.9 1.3 1.9-1.3 2.3.3.9-2.2 2.2-.9z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+        <span>Настройки</span>
+      </button>
+    </div>
+  </header>
+
+  <main class="page">
+    <section id="alerts" class="alerts"></section>
+    <section id="summary" class="summary"></section>
+
+    <section class="toolbar">
+      <label class="search">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="9" cy="9" r="5.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m13.5 13.5 3.5 3.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        <input id="search" type="search" placeholder="Поиск: проект, домен, бакет, репозиторий" autocomplete="off">
+      </label>
+      <select id="sort" class="select" aria-label="Сортировка">
+        <option value="deploy">Сначала свежие деплои</option>
+        <option value="status">Сначала требующие внимания</option>
+        <option value="name">По имени</option>
+      </select>
+      <div class="toolbar-spacer"></div>
+      <button class="btn primary" id="updateOutdatedBtn" type="button" hidden></button>
+    </section>
+
+    <section id="selectionBar" class="selection-bar" hidden></section>
+
+    <section class="card table-card">
+      <table class="projects">
+        <thead>
+          <tr>
+            <th class="col-check"><input type="checkbox" id="selectAll" aria-label="Выбрать все показанные"></th>
+            <th>Проект</th>
+            <th>Vercel</th>
+            <th>Yandex Cloud</th>
+            <th>Статус</th>
+            <th class="col-actions"></th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div id="empty" class="empty" hidden></div>
+    </section>
+
+    <section id="bucketsSection" class="card buckets" hidden></section>
+  </main>
+
+  <aside id="jobsPanel" class="jobs-panel" hidden>
+    <button class="jobs-head" id="jobsToggle" type="button"></button>
+    <div class="jobs-body" id="jobsBody"></div>
+  </aside>
+
+  <div id="menu" class="menu" hidden></div>
+  <dialog id="modal" class="modal"></dialog>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
