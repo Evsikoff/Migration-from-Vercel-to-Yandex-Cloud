@@ -1,7 +1,7 @@
 // Полный цикл «Vercel → Yandex Cloud» для одного проекта: деплой → исходники → сборка → выгрузка → манифест.
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import { adaptCommand, buildEnvFrom, collectOutputFiles, detectBuild, fetchSource, resolveOutputDir, runCommand, CancelledError } from './build.js';
+import { adaptCommand, buildEnvFrom, collectOutputFiles, detectBuild, fetchSource, isolateFromOuterPostcss, resolveOutputDir, runCommand, CancelledError } from './build.js';
 import { WORK_DIR } from './config.js';
 import { ensureBucket, planObjects, uploadObjects, writeManifest } from './deploy.js';
 import { gitFromMeta, repoFromLink } from './vercel.js';
@@ -80,6 +80,10 @@ export async function runSync(job, ctx) {
     log(`Менеджер пакетов: ${cfg.pm}; установка: ${cfg.installCommand || '—'}; сборка: ${cfg.buildCommand || '—'}; результат: ${cfg.outputDirectory || 'определю после сборки'}`);
   } else {
     log('Статический сайт без сборки: файлы выкладываются как есть');
+  }
+  if (cfg.installCommand || cfg.buildCommand) {
+    const outer = await isolateFromOuterPostcss(source.dir);
+    if (outer.length) log(`Выше рабочей папки лежит посторонний конфиг PostCSS (${outer.join(', ')}). На Vercel его нет, поэтому сборка от него отгорожена.`, 'warn');
   }
   const baseEnv = { ...process.env, CI: '1', FORCE_COLOR: '0', NO_COLOR: '1', npm_config_fund: 'false', npm_config_audit: 'false', npm_config_update_notifier: 'false' };
   if (cfg.installCommand) {

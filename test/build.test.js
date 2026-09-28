@@ -3,7 +3,8 @@ import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { adaptCommand, buildEnvFrom, collectOutputFiles, detectBuild, makeIgnoreMatcher, resolveOutputDir } from '../src/build.js';
+import { adaptCommand, buildEnvFrom, collectOutputFiles, detectBuild, isolateFromOuterPostcss, makeIgnoreMatcher, resolveOutputDir } from '../src/build.js';
+import { exists } from '../src/util.js';
 
 async function tree(files) {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'v2yc-'));
@@ -107,4 +108,25 @@ test('pnpm/yarn через npx, если их нет на компьютере',
 
 test('системные переменные Vercel не попадают в сборку', () => {
   assert.deepEqual(buildEnvFrom({ VITE_API: 'x', VERCEL: '1', VERCEL_URL: 'u', NOW_BUILDER: '1', TURBO_TOKEN: 't', NODE_ENV: 'production' }), { VITE_API: 'x', NODE_ENV: 'production' });
+});
+
+test('посторонний конфиг PostCSS выше рабочей папки отгораживается заглушкой', async () => {
+  const root = await tree({
+    'postcss.config.mjs': 'export default { plugins: ["@tailwindcss/postcss"] };',
+    'app/package.json': { postcss: { plugins: {} } },
+    'app/data/work/job/src/package.json': { scripts: { build: 'vite build' } },
+    'app/data/work/job/src/postcss.config.js': 'module.exports = {};', // свой конфиг проекта — не посторонний
+  });
+  const src = path.join(root, 'app', 'data', 'work', 'job', 'src');
+  const guard = path.join(root, 'app', 'data', 'work', 'job', '.postcssrc.json');
+  // Выше временной папки на машине с тестами может быть что-то своё — смотрим только на нашу.
+  const ours = async () => (await isolateFromOuterPostcss(src)).filter((f) => f.startsWith(root));
+  assert.deepEqual(await ours(), [path.join(root, 'app', 'package.json'), path.join(root, 'postcss.config.mjs')]);
+  assert.deepEqual(JSON.parse(await fsp.readFile(guard, 'utf8')), { plugins: [] });
+  // Своя заглушка при повторной сборке посторонней не считается, а без посторонних конфигов она убирается.
+  await fsp.rm(path.join(root, 'postcss.config.mjs'));
+  await fsp.rm(path.join(root, 'app', 'package.json'));
+  const outside = await isolateFromOuterPostcss(src);
+  assert.deepEqual(outside.filter((f) => f.startsWith(root)), []);
+  assert.equal(await exists(guard), outside.length > 0);
 });

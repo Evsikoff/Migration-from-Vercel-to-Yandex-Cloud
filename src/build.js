@@ -177,6 +177,39 @@ export async function fetchSource({ vercel, deployment, projectInfo, teamId, wor
   throw new Error('Не удалось получить исходники: у деплоя нет git-коммита и Vercel не отдаёт его файлы');
 }
 
+// ---------- Посторонние конфиги выше рабочей папки ----------
+
+// Сборщики ищут конфиг PostCSS и выше проекта: Vite — до корня workspace (pnpm-workspace.yaml, lerna.json,
+// package.json с workspaces), webpack — до домашней папки, Next.js — до корня диска. На Vercel выше репозитория
+// пусто, а здесь программа может лежать, например, в «Загрузках» рядом с чужим postcss.config.mjs.
+const POSTCSS_CONFIG_NAMES = [
+  '.postcssrc', '.postcssrc.json', '.postcssrc.yaml', '.postcssrc.yml', 'postcss.config.json',
+  ...['js', 'cjs', 'mjs', 'ts', 'cts', 'mts'].flatMap((ext) => [`.postcssrc.${ext}`, `postcss.config.${ext}`]),
+];
+const POSTCSS_GUARD = '.postcssrc.json';
+
+/**
+ * Ищет конфиги PostCSS выше папки с исходниками. Если нашлись — кладёт прямо над исходниками пустой конфиг:
+ * поиск остановится на нём, и проект без своего конфига соберётся как на Vercel. Возвращает найденные пути.
+ */
+export async function isolateFromOuterPostcss(srcDir) {
+  const guardDir = path.dirname(srcDir);
+  const found = [];
+  for (let dir = path.dirname(guardDir); ; dir = path.dirname(dir)) {
+    for (const name of POSTCSS_CONFIG_NAMES) {
+      const file = path.join(dir, name);
+      if ((await fsp.stat(file).catch(() => null))?.isFile()) found.push(file);
+    }
+    const pkgFile = path.join(dir, 'package.json');
+    if ((await readJson(pkgFile, null))?.postcss != null) found.push(pkgFile);
+    if (path.dirname(dir) === dir) break;
+  }
+  const guard = path.join(guardDir, POSTCSS_GUARD);
+  if (found.length) await fsp.writeFile(guard, '{ "plugins": [] }\n');
+  else await fsp.rm(guard, { force: true });
+  return found;
+}
+
 // ---------- Настройки сборки ----------
 
 /** Папка результата по умолчанию для пресетов Vercel. */
