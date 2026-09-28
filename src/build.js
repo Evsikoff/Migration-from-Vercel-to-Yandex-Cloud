@@ -88,10 +88,15 @@ export function runCommand(command, { cwd, env, log, signal, quiet = false }) {
 
 // В Windows не запрещаем запрос учётных данных: Git Credential Manager покажет окно входа для приватного репозитория.
 const GIT_ENV = process.platform === 'win32' ? {} : { GIT_TERMINAL_PROMPT: '0' };
+// Git для Windows по умолчанию не работает с путями длиннее 260 символов: если программа лежит глубоко
+// (например, в «Загрузках» в дважды вложенной распакованной папке), fetch падает на
+// .git/objects/pack/pack-<sha>.keep с «Filename too long». core.longpaths снимает ограничение;
+// через -c настройка передаётся и дочерним процессам git (submodule, lfs).
+const GIT_OPTS = process.platform === 'win32' ? '-c core.longpaths=true ' : '';
 
 async function gitCheckout({ cloneUrl, sha, ref, dir, log, signal }) {
   const env = { ...process.env, ...GIT_ENV };
-  const git = (args, opts = {}) => runCommand(`git ${args}`, { cwd: dir, env, log, signal, ...opts });
+  const git = (args, opts = {}) => runCommand(`git ${GIT_OPTS}${args}`, { cwd: dir, env, log, signal, ...opts });
   await fsp.mkdir(dir, { recursive: true });
   if (!(await exists(path.join(dir, '.git')))) {
     await git('init -q');
