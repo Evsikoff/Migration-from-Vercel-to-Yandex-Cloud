@@ -11,13 +11,13 @@ export const WORK_DIR = path.join(DATA_DIR, 'work');
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
 
-/** Путь, который указал пользователь: C:\Users\user\Tracing\.yc-prokormi.env */
-export const DEFAULT_YC_ENV_FILE = 'C:\\Users\\user\\Tracing\\.yc-prokormi.env';
+/** Файл с ключами по умолчанию — рядом с программой (в git не попадает). */
+export const DEFAULT_YC_ENV_FILE = path.join(APP_DIR, 'yc-keys.env');
 
 const DEFAULTS = {
   vercelToken: '',
   ycEnvFile: '',
-  serviceAccount: 'prokormi-deployer',
+  serviceAccount: '', // имя сервисного аккаунта для подписи в интерфейсе; пусто — берётся из файла ключей
   links: {}, // projectId → имя бакета (ручные связи)
   cleanWorkDir: true, // удалять рабочую папку сборки после успешной выгрузки
   jobConcurrency: 1, // сколько проектов собирать одновременно
@@ -36,40 +36,88 @@ export async function saveConfig(config) {
 // ---------- Ключи Yandex Cloud ----------
 
 export function ycEnvCandidates(config) {
+  const home = os.homedir();
   const list = [];
   if (config?.ycEnvFile) list.push(config.ycEnvFile);
   if (process.env.YC_ENV_FILE) list.push(process.env.YC_ENV_FILE);
-  if (process.platform === 'win32') list.push(DEFAULT_YC_ENV_FILE);
-  list.push(path.join(os.homedir(), 'Tracing', '.yc-prokormi.env'));
-  list.push(path.join(os.homedir(), '.yc-prokormi.env'));
+  list.push(DEFAULT_YC_ENV_FILE, path.join(home, '.yc-keys.env'), path.join(home, 'yc-keys.env'));
+  // Имена из первых версий программы — чтобы у прежних пользователей всё работало без изменений.
+  list.push(path.join(home, 'Tracing', '.yc-prokormi.env'), path.join(home, '.yc-prokormi.env'));
   return [...new Set(list.map((p) => path.resolve(p)))];
 }
 
+/** Читает текстовый файл в UTF-8 или UTF-16 (так сохраняет вывод `>` Windows PowerShell 5). */
+async function readTextFile(file) {
+  const buf = await fsp.readFile(file);
+  if (buf[0] === 0xff && buf[1] === 0xfe) return buf.subarray(2).toString('utf16le');
+  if (buf[0] === 0xfe && buf[1] === 0xff) return Buffer.from(buf.subarray(2, buf.length - (buf.length % 2))).swap16().toString('utf16le');
+  return buf.toString('utf8');
+}
+
 /**
- * Ищет файл с ключами сервисного аккаунта. Формат:
- *   YC_ACCESS_KEY_ID=...
+ * Достаёт ключи из текста файла. Понимает два формата:
+ *   YC_ACCESS_KEY_ID=...            — «ручной» (также AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY);
  *   YC_SECRET_ACCESS_KEY=...
- * (дополнительно можно положить туда VERCEL_TOKEN=...)
+ *   YC_SERVICE_ACCOUNT=имя          — необязательно, для подписи в интерфейсе;
+ * и вывод команды `yc iam access-key create` как есть (строки `key_id: ...`, `secret: ...`).
+ */
+export function parseYcKeys(text) {
+  const env = parseEnvText(text);
+  const yaml = (name) => String(text).match(new RegExp(`^\\s*${name}:\\s*"?([^"\\s]+)"?\\s*$`, 'm'))?.[1];
+  return {
+    env,
+    accessKeyId: env.YC_ACCESS_KEY_ID || env.AWS_ACCESS_KEY_ID || yaml('key_id'),
+    secretAccessKey: env.YC_SECRET_ACCESS_KEY || env.AWS_SECRET_ACCESS_KEY || yaml('secret'),
+    serviceAccount: env.YC_SERVICE_ACCOUNT || null,
+    serviceAccountId: yaml('service_account_id') || null,
+  };
+}
+
+/**
+ * Ищет ключи сервисного аккаунта (статический ключ доступа). Порядок:
+ * файл из настроек → файл из YC_ENV_FILE → переменные окружения YC_ACCESS_KEY_ID/YC_SECRET_ACCESS_KEY →
+ * yc-keys.env рядом с программой → ~/.yc-keys.env → ~/yc-keys.env → старые имена .yc-prokormi.env.
+ * В файл можно положить и VERCEL_TOKEN=...
  */
 export async function loadYcCredentials(config) {
   const tried = [];
-  for (const file of ycEnvCandidates(config)) {
+  const candidates = ycEnvCandidates(config);
+  const explicit = new Set([config?.ycEnvFile, process.env.YC_ENV_FILE].filter(Boolean).map((p) => path.resolve(p)));
+  const fromProcessEnv = () => {
+    // Только YC_*: AWS_* в окружении обычно относятся к настоящему AWS, а не к Yandex Cloud.
+    const accessKeyId = process.env.YC_ACCESS_KEY_ID;
+    const secretAccessKey = process.env.YC_SECRET_ACCESS_KEY;
+    if (!accessKeyId || !secretAccessKey) return null;
+    return { file: null, source: 'переменные окружения', env: {}, accessKeyId, secretAccessKey, serviceAccount: process.env.YC_SERVICE_ACCOUNT || null };
+  };
+  let envChecked = false;
+  for (const file of candidates) {
+    if (!envChecked && !explicit.has(file)) {
+      envChecked = true;
+      const fromEnv = fromProcessEnv();
+      if (fromEnv) return fromEnv;
+    }
     let text;
     try {
-      text = await fsp.readFile(file, 'utf8');
+      text = await readTextFile(file);
     } catch {
       tried.push(file);
       continue;
     }
-    const env = parseEnvText(text);
-    const accessKeyId = env.YC_ACCESS_KEY_ID || env.AWS_ACCESS_KEY_ID;
-    const secretAccessKey = env.YC_SECRET_ACCESS_KEY || env.AWS_SECRET_ACCESS_KEY;
-    if (!accessKeyId || !secretAccessKey) {
-      return { file, env, error: `В файле ${file} нет YC_ACCESS_KEY_ID и/или YC_SECRET_ACCESS_KEY` };
+    const keys = parseYcKeys(text);
+    if (!keys.accessKeyId || !keys.secretAccessKey) {
+      return { file, env: keys.env, error: `В файле ${file} нет ключей: нужны строки YC_ACCESS_KEY_ID=… и YC_SECRET_ACCESS_KEY=…` };
     }
-    return { file, env, accessKeyId, secretAccessKey };
+    return { file, source: `файл ${file}`, ...keys };
   }
-  return { error: `Не найден файл с ключами Yandex Cloud. Проверены: ${tried.join('; ')}`, tried };
+  if (!envChecked) {
+    const fromEnv = fromProcessEnv();
+    if (fromEnv) return fromEnv;
+  }
+  return {
+    error: `Не найдены ключи сервисного аккаунта Yandex Cloud. Создайте файл ${DEFAULT_YC_ENV_FILE} со строками YC_ACCESS_KEY_ID=… и YC_SECRET_ACCESS_KEY=… (как получить ключи — в README, раздел «Сервисный аккаунт Yandex Cloud»). Проверены: ${tried.join('; ')}`,
+    tried,
+  };
 }
 
 // ---------- Токен Vercel ----------

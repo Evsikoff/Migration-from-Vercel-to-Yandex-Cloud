@@ -11,6 +11,6 @@
     "start": "node src/server.js",
     "status": "node src/cli.js status",
     "update-outdated": "node src/cli.js update-outdated",
-    "test": "node --test test/s3.test.js test/util.test.js test/overview.test.js test/build.test.js test/vercel.test.js test/sync.test.js"
+    "test": "node --test test/config.test.js test/s3.test.js test/util.test.js test/overview.test.js test/build.test.js test/vercel.test.js test/sync.test.js"
   }
 }

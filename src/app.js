@@ -74,7 +74,14 @@ export class App {
         autoCheckMinutes: this.config.autoCheckMinutes,
         hasSavedVercelToken: Boolean(this.config.vercelToken),
       },
-      yc: { file: yc.file || null, error: yc.error || null, accessKeyId: yc.accessKeyId ? maskSecret(yc.accessKeyId) : null, candidates: ycEnvCandidates(this.config) },
+      yc: {
+        file: yc.file || null,
+        source: yc.source || null,
+        error: yc.error || null,
+        accessKeyId: yc.accessKeyId ? maskSecret(yc.accessKeyId) : null,
+        serviceAccount: yc.serviceAccount || null,
+        candidates: ycEnvCandidates(this.config),
+      },
       vercel: { source: vercelToken.source, token: vercelToken.token ? maskSecret(vercelToken.token) : null },
       tools: this.tools,
       dataDir: DATA_DIR,
@@ -86,7 +93,7 @@ export class App {
     const c = this.config;
     if (typeof patch.vercelToken === 'string') c.vercelToken = patch.vercelToken.trim();
     if (typeof patch.ycEnvFile === 'string') c.ycEnvFile = patch.ycEnvFile.trim().replace(/^"(.*)"$/, '$1');
-    if (typeof patch.serviceAccount === 'string' && patch.serviceAccount.trim()) c.serviceAccount = patch.serviceAccount.trim();
+    if (typeof patch.serviceAccount === 'string') c.serviceAccount = patch.serviceAccount.trim();
     if (typeof patch.cleanWorkDir === 'boolean') c.cleanWorkDir = patch.cleanWorkDir;
     if (patch.jobConcurrency !== undefined) c.jobConcurrency = Math.min(4, Math.max(1, Number(patch.jobConcurrency) || 1));
     if (patch.autoCheckMinutes !== undefined) c.autoCheckMinutes = Math.min(1440, Math.max(0, Number(patch.autoCheckMinutes) || 0));
@@ -118,7 +125,7 @@ export class App {
     const { yc } = await this.connections();
     if (yc.error) return { error: yc.error, buckets: [] };
     const s3 = new S3Client({ accessKeyId: yc.accessKeyId, secretAccessKey: yc.secretAccessKey });
-    return { keyFile: yc.file, buckets: await scanBuckets(s3) };
+    return { keyFile: yc.file, keySource: yc.source, serviceAccount: yc.serviceAccount || null, accessKeyId: maskSecret(yc.accessKeyId), buckets: await scanBuckets(s3) };
   }
 
   /** Перечитывает проекты Vercel и бакеты Yandex Cloud (параллельно). */
@@ -147,7 +154,15 @@ export class App {
     return {
       scannedAt: this.cache.at,
       vercel: { error: v.error || null, needsToken: Boolean(v.needsToken), user: v.user || null, teams: v.teams || [], tokenSource: v.tokenSource || null, warnings: v.warnings || [] },
-      yandex: { error: y.error || null, serviceAccount: this.config.serviceAccount, keyFile: y.keyFile || null, bucketCount: (y.buckets || []).length },
+      yandex: {
+        error: y.error || null,
+        // Имя аккаунта — из настроек или файла ключей; если его нигде нет, покажем хотя бы начало ключа.
+        serviceAccount: this.config.serviceAccount || y.serviceAccount || null,
+        accessKeyId: y.accessKeyId || null,
+        keyFile: y.keyFile || null,
+        keySource: y.keySource || null,
+        bucketCount: (y.buckets || []).length,
+      },
       counts,
       rows,
       unmatchedBuckets,

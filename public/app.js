@@ -2,6 +2,7 @@
 const SESSION = document.querySelector('meta[name="session"]').content;
 const $ = (sel, el = document) => el.querySelector(sel);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+const README_SA_URL = 'https://github.com/Evsikoff/Migration-from-Vercel-to-Yandex-Cloud#сервисный-аккаунт-yandex-cloud';
 
 const state = {
   overview: null,
@@ -201,10 +202,10 @@ function renderConn() {
   const y = o.yandex;
   const yText = y.error
     ? '<b>Yandex Cloud</b><span class="dim">ошибка</span>'
-    : `<b>Yandex Cloud</b><span class="dim">${esc(y.serviceAccount)} · ${y.bucketCount} ${plural(y.bucketCount, 'бакет', 'бакета', 'бакетов')}</span>`;
+    : `<b>Yandex Cloud</b><span class="dim">${esc(y.serviceAccount || (y.accessKeyId ? `ключ ${y.accessKeyId}` : 'сервисный аккаунт'))} · ${y.bucketCount} ${plural(y.bucketCount, 'бакет', 'бакета', 'бакетов')}</span>`;
   el.innerHTML = `
     <button class="chip" type="button" data-open="settings" title="${esc(v.error || `Токен: ${v.tokenSource || ''}`)}"><span class="dot ${v.error ? 'bad' : 'ok'}"></span>${vText}</button>
-    <button class="chip" type="button" data-open="settings" title="${esc(y.error || `Ключи: ${y.keyFile || ''}`)}"><span class="dot ${y.error ? 'bad' : 'ok'}"></span>${yText}</button>`;
+    <button class="chip" type="button" data-open="settings" title="${esc(y.error || `Ключи: ${y.keySource || y.keyFile || ''}`)}"><span class="dot ${y.error ? 'bad' : 'ok'}"></span>${yText}</button>`;
 }
 
 function renderAlerts() {
@@ -234,7 +235,7 @@ function renderAlerts() {
     parts.push(`<div class="alert error"><div class="alert-body"><div class="alert-title">Vercel недоступен</div>${esc(o.vercel.error)}</div><button class="btn sm" data-open="settings">Настройки</button></div>`);
   }
   if (o.yandex.error) {
-    parts.push(`<div class="alert error"><div class="alert-body"><div class="alert-title">Yandex Cloud недоступен</div>${esc(o.yandex.error)}</div><button class="btn sm" data-open="settings">Настройки</button></div>`);
+    parts.push(`<div class="alert error"><div class="alert-body"><div class="alert-title">Yandex Cloud недоступен</div>${esc(o.yandex.error)}<div><a href="${README_SA_URL}" target="_blank" rel="noopener">Как создать сервисный аккаунт и ключи</a></div></div><button class="btn sm" data-open="settings">Настройки</button></div>`);
   }
   if (o.vercel.warnings?.length) {
     parts.push(`<div class="alert warn"><div class="alert-body"><div class="alert-title">Часть данных Vercel не получена</div><details><summary>Подробнее (${o.vercel.warnings.length})</summary><ul class="list-plain">${o.vercel.warnings.map((w) => `<li>${esc(w)}</li>`).join('')}</ul></details></div></div>`);
@@ -819,9 +820,9 @@ async function settingsDialog() {
         </label>
         <label class="field"><span>Файл с ключами сервисного аккаунта Yandex Cloud</span>
           <input class="input mono" name="ycEnvFile" value="${esc(s.config.ycEnvFile)}" placeholder="${esc(s.yc.file || s.yc.candidates[0] || '')}" spellcheck="false">
-          <small class="${s.yc.error ? 'err' : ''}">${s.yc.error ? esc(s.yc.error) : `Используется ${esc(s.yc.file)} (ключ ${esc(s.yc.accessKeyId)}). Формат: строки YC_ACCESS_KEY_ID=… и YC_SECRET_ACCESS_KEY=…`}</small>
+          <small class="${s.yc.error ? 'err' : ''}">${s.yc.error ? esc(s.yc.error) : `Используются ${esc(s.yc.source)} (ключ ${esc(s.yc.accessKeyId)}).`} Формат: строки YC_ACCESS_KEY_ID=… и YC_SECRET_ACCESS_KEY=…, подойдёт и вывод <span class="mono">yc iam access-key create</span>. <a href="${README_SA_URL}" target="_blank" rel="noopener">Как создать ключи</a>.</small>
         </label>
-        <label class="field"><span>Сервисный аккаунт</span><input class="input" name="serviceAccount" value="${esc(s.config.serviceAccount)}"><small>Для подписи в интерфейсе; доступ определяется ключами из файла.</small></label>
+        <label class="field"><span>Имя сервисного аккаунта</span><input class="input" name="serviceAccount" value="${esc(s.config.serviceAccount)}" placeholder="${esc(s.yc.serviceAccount || 'любое, например site-deployer')}" spellcheck="false"><small>Только для подписи в интерфейсе — можно оставить пустым. Какой аккаунт используется, определяют ключи.</small></label>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
           <label class="field"><span>Сборок одновременно</span><input class="input" name="jobConcurrency" type="number" min="1" max="4" value="${esc(s.config.jobConcurrency)}"></label>
           <label class="field"><span>Перепроверять актуальность, мин</span><input class="input" name="autoCheckMinutes" type="number" min="0" max="1440" value="${esc(s.config.autoCheckMinutes)}"><small>0 — только вручную</small></label>
