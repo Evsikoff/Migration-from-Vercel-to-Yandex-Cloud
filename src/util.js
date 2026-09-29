@@ -26,7 +26,7 @@ export async function mapLimit(items, limit, fn) {
   return results;
 }
 
-/** Разбирает файл вида KEY=VALUE (как .yc-prokormi.env). Понимает BOM, комментарии, кавычки и `export`. */
+/** Разбирает файл вида KEY=VALUE (как yc-keys.env). Понимает BOM, комментарии, кавычки и `export`. */
 export function parseEnvText(text) {
   const out = {};
   for (let line of String(text).replace(/^﻿/, '').split(/\r?\n/)) {

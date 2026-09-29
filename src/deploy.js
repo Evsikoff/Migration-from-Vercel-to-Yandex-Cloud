@@ -8,7 +8,7 @@ import { cacheControlFor, contentTypeFor, hashFile, mapLimit } from './util.js';
 export const MANIFEST_KEY = '.vercel-sync.json';
 
 /**
- * Готовит бакет к выгрузке: создаёт (публичное чтение, как у бакета prokormi), включает хостинг сайта.
+ * Готовит бакет к выгрузке: создаёт (публичное чтение), включает хостинг сайта.
  * errorDocument — index.html для SPA или 404.html, если он есть в сборке.
  */
 export async function ensureBucket(s3, bucket, { state, errorDocument, log }) {
