@@ -1,7 +1,7 @@
 // Полный цикл «Vercel → Yandex Cloud» для одного проекта: деплой → исходники → сборка → выгрузка → манифест.
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import { adaptCommand, buildEnvFrom, collectOutputFiles, detectBuild, fetchSource, isolateFromOuterPostcss, resolveOutputDir, runCommand, CancelledError } from './build.js';
+import { buildEnvFrom, collectOutputFiles, detectBuild, fetchSource, isolateFromOuterPostcss, prepareCommand, resolveOutputDir, runCommand, CancelledError } from './build.js';
 import { WORK_DIR } from './config.js';
 import { ensureBucket, planObjects, uploadObjects, writeManifest } from './deploy.js';
 import { gitFromMeta, repoFromLink } from './vercel.js';
@@ -86,14 +86,18 @@ export async function runSync(job, ctx) {
     if (outer.length) log(`Выше рабочей папки лежит посторонний конфиг PostCSS (${outer.join(', ')}). На Vercel его нет, поэтому сборка от него отгорожена.`, 'warn');
   }
   const baseEnv = { ...process.env, CI: '1', FORCE_COLOR: '0', NO_COLOR: '1', npm_config_fund: 'false', npm_config_audit: 'false', npm_config_update_notifier: 'false' };
+  const run = (command, env) => {
+    const p = prepareCommand(command, { tools, pkg: cfg.pkg });
+    return runCommand(p.command, { cwd: cfg.rootDir, env: { ...env, ...p.env }, display: p.display, log, signal });
+  };
   if (cfg.installCommand) {
     const installEnv = { ...baseEnv, ...vercelEnv };
     delete installEnv.NODE_ENV; // иначе npm не поставит devDependencies (vite и т.п.)
-    await runCommand(adaptCommand(cfg.installCommand, tools, cfg.pkg), { cwd: cfg.rootDir, env: installEnv, log, signal });
+    await run(cfg.installCommand, installEnv);
   }
   check();
   if (cfg.buildCommand) {
-    await runCommand(adaptCommand(cfg.buildCommand, tools, cfg.pkg), { cwd: cfg.rootDir, env: { ...baseEnv, ...vercelEnv }, log, signal });
+    await run(cfg.buildCommand, { ...baseEnv, ...vercelEnv });
   }
   check();
   const out = await resolveOutputDir(cfg, { built: Boolean(cfg.buildCommand) });

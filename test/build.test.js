@@ -3,7 +3,7 @@ import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { adaptCommand, buildEnvFrom, collectOutputFiles, detectBuild, isolateFromOuterPostcss, makeIgnoreMatcher, resolveOutputDir } from '../src/build.js';
+import { adaptCommand, buildEnvFrom, collectOutputFiles, detectBuild, isolateFromOuterPostcss, makeIgnoreMatcher, prepareCommand, resolveOutputDir, runCommand, splitEnvAssignments } from '../src/build.js';
 import { exists } from '../src/util.js';
 
 async function tree(files) {
@@ -104,6 +104,45 @@ test('pnpm/yarn через npx, если их нет на компьютере',
   assert.equal(adaptCommand('yarn build', { yarn: null }, {}), 'npx --yes yarn@1 build');
   assert.equal(adaptCommand('pnpm install', { pnpm: '9.0.0' }, {}), 'pnpm install');
   assert.equal(adaptCommand('npm ci', {}, {}), 'npm ci');
+});
+
+test('переменные в начале команды (NAME=value команда) разбираются как в sh', () => {
+  assert.deepEqual(splitEnvAssignments('LOONA_INTRO_URL=intro.mp4 npm run build'), {
+    env: { LOONA_INTRO_URL: 'intro.mp4' },
+    prefix: 'LOONA_INTRO_URL=intro.mp4 ',
+    command: 'npm run build',
+  });
+  assert.deepEqual(splitEnvAssignments(`CI=false A='x y' B="q\\"z" C=a\\ b E=  vite build && cp a b`), {
+    env: { CI: 'false', A: 'x y', B: 'q"z', C: 'a b', E: '' },
+    prefix: `CI=false A='x y' B="q\\"z" C=a\\ b E=  `,
+    command: 'vite build && cp a b',
+  });
+  assert.equal(splitEnvAssignments('npm run build'), null);
+  assert.equal(splitEnvAssignments('A=1'), null);
+  assert.equal(splitEnvAssignments('A=1 && npm run build'), null);
+  assert.equal(splitEnvAssignments('A=1;npm run build'), null);
+  assert.equal(splitEnvAssignments('NODE_OPTIONS="$NODE_OPTIONS --max-old-space-size=4096" next build'), null);
+  assert.equal(splitEnvAssignments("A='open npm run build"), null);
+});
+
+test('Windows: переменные из команды передаются через окружение — cmd.exe запись NAME=value не понимает', async () => {
+  assert.deepEqual(prepareCommand('CI=false pnpm build', { tools: { pnpm: null }, pkg: {}, platform: 'win32' }), {
+    command: 'npx --yes pnpm@latest build',
+    env: { CI: 'false' },
+    display: 'CI=false npx --yes pnpm@latest build',
+  });
+  // В sh такая запись работает сама — команда не меняется.
+  assert.deepEqual(prepareCommand('LOONA_INTRO_URL=intro.mp4 npm run build', { platform: 'linux' }), {
+    command: 'LOONA_INTRO_URL=intro.mp4 npm run build',
+    env: {},
+    display: 'LOONA_INTRO_URL=intro.mp4 npm run build',
+  });
+  // Остаток команды запускается с переменной в окружении, а в логе — команда в том виде, как написана в vercel.json.
+  const p = prepareCommand('V2YC_INTRO=intro.mp4 node -e "console.log(process.env.V2YC_INTRO)"', { platform: 'win32' });
+  const lines = [];
+  const output = await runCommand(p.command, { cwd: os.tmpdir(), env: { ...process.env, ...p.env }, display: p.display, log: (l) => lines.push(l) });
+  assert.deepEqual(output, ['intro.mp4']);
+  assert.equal(lines[0], '> V2YC_INTRO=intro.mp4 node -e "console.log(process.env.V2YC_INTRO)"');
 });
 
 test('системные переменные Vercel не попадают в сборку', () => {
