@@ -6,7 +6,7 @@ import { JobManager } from './jobs.js';
 import { buildOverview, scanBucket, scanBuckets } from './overview.js';
 import { S3Client } from './s3.js';
 import { runSync } from './sync.js';
-import { suggestBucketName, validateBucketName } from './util.js';
+import { alternativeBucketNames, suggestBucketName, validateBucketName } from './util.js';
 import { VercelClient, enrichSummaries, summarizeProject } from './vercel.js';
 
 function probe(command) {
@@ -178,6 +178,19 @@ export class App {
     await saveConfig(this.config);
   }
 
+  /** Проверка имени бакета в диалоге копирования: свободно, уже в нашем каталоге или занято (тогда — свободные варианты). */
+  async checkBucketName(name, projectId) {
+    const error = validateBucketName(name);
+    if (error) return { name, state: 'invalid', error };
+    const { s3 } = await this.clients();
+    const state = await s3.bucketState(name);
+    if (state !== 'foreign') return { name, state };
+    const project = this.cache.vercel?.projects?.find((p) => p.id === projectId);
+    const candidates = project ? alternativeBucketNames(project, name).slice(0, 6) : [];
+    const states = await Promise.all(candidates.map((n) => s3.bucketState(n).catch(() => null)));
+    return { name, state, alternatives: candidates.filter((n, i) => states[i] === 'missing').slice(0, 3) };
+  }
+
   async recordSync(bucket, manifest) {
     this.state.syncs[bucket] = manifest;
     await saveState(this.state);
@@ -191,6 +204,8 @@ export class App {
     const target = (bucket || row.yandex?.bucket || row.suggestedBucket || suggestBucketName(row.name)).trim();
     const err = validateBucketName(target);
     if (err) throw new Error(`Имя бакета «${target}»: ${err}`);
+    // Новое имя из диалога копирования заменяет ручную связь — иначе проект остался бы связан со старым бакетом.
+    if (bucket && this.config.links[row.id] && this.config.links[row.id] !== target) await this.setLink(row.id, target);
     const existsNow = row.yandex?.exists && row.yandex.bucket === target;
     return this.jobs.enqueue({ projectId: row.id, projectName: row.name, teamId: row.teamId, bucket: target, mode: existsNow ? 'update' : 'copy' });
   }

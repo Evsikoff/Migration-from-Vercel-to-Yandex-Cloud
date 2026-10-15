@@ -69,6 +69,21 @@ export function suggestBucketName(projectName) {
   return s;
 }
 
+/**
+ * Запасные имена бакета, если имя по проекту занято: сначала по адресам сайта на Vercel
+ * (loona-seven.vercel.app → loona-seven), затем имя проекта с суффиксами. Без занятого имени и повторов.
+ */
+export function alternativeBucketNames({ name, domains = [] }, taken) {
+  const base = suggestBucketName(name);
+  const fromDomains = domains
+    .filter((d) => !/-git-/.test(d))
+    .map((d) => suggestBucketName(d.replace(/\.vercel\.app$/, '').replace(/\./g, '-')))
+    .sort((a, b) => a.length - b.length);
+  const suffixed = ['-site', '-web', '-app'].filter((x) => !base.endsWith(x)).map((x) => `${base}${x}`);
+  const all = [...fromDomains, ...suffixed];
+  return [...new Set(all)].filter((n) => n !== taken && n !== base && !validateBucketName(n));
+}
+
 /** Ключ для «нестрогого» сравнения имён проекта и бакета: регистр и разделители не важны. */
 export function looseName(name) {
   return String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, '');

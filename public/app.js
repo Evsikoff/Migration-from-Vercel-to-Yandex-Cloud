@@ -375,7 +375,10 @@ function statusCell(r, job) {
   }
   let err = '';
   if (job && job.status === 'error') {
-    err = `<div class="status-note err">Ошибка: ${esc(firstLine(job.error).slice(0, 160))} · <a data-act="log" data-job="${job.id}">лог</a></div>`;
+    const taken = job.errorCode === 'bucket-unavailable';
+    const text = taken ? `имя бакета «${job.bucket}» занято` : firstLine(job.error).slice(0, 160);
+    const rename = taken && r.production ? ` · <a data-act="copy" data-id="${r.id}">выбрать другое имя</a>` : '';
+    err = `<div class="status-note err">Ошибка: ${esc(text)} · <a data-act="log" data-job="${job.id}">лог</a>${rename}</div>`;
   }
   return `<span class="pill ${r.status}">${esc(r.statusLabel)}</span>${note ? `<div class="status-note">${esc(note)}</div>` : ''}${err}`;
 }
@@ -581,7 +584,13 @@ const siteUrlFor = (b) => `${b.includes('.') ? 'http' : 'https'}://${b}.website.
 
 function copyDialog(r) {
   const p = r.production;
-  const initial = r.yandex?.bucket || r.suggestedBucket;
+  const last = jobFor(r.id);
+  // Имя из прошлой попытки копирования: если оно занято, проверка сразу это покажет и предложит свободные.
+  const initial = r.yandex?.bucket || (last?.mode === 'copy' ? last.bucket : null) || r.suggestedBucket;
+  const owners = new Map(allBuckets());
+  let checked = null; // результат проверки имени, которое сейчас в поле
+  let seq = 0;
+  let timer = null;
   showModal(
     `<form>
       <div class="modal-head"><h2>Скопировать «${esc(r.name)}» в Yandex Cloud</h2><p>Копия появится в Object Storage и будет отслеживаться на актуальность.</p></div>
@@ -594,8 +603,10 @@ function copyDialog(r) {
         <label class="field"><span>Имя бакета</span>
           <input class="input mono" name="bucket" value="${esc(initial)}" autocomplete="off" spellcheck="false" required>
           <small class="err" id="bucketErr"></small>
-          <small>Имена бакетов уникальны во всём Yandex Cloud. Если имя занято — программа сообщит об этом до сборки.</small>
+          <small id="bucketCheck"></small>
+          <small>Имена бакетов общие для всего Yandex Cloud — программа проверяет, свободно ли имя, пока вы его вводите.</small>
         </label>
+        <div class="alts" id="bucketAlts" hidden></div>
         <div class="field"><span>Адрес сайта</span><div class="url-preview" id="urlPreview"></div></div>
       </div>
       <div class="modal-foot"><button class="btn" type="button" data-close>Отмена</button><button class="btn primary" type="submit">Скопировать</button></div>
@@ -608,20 +619,87 @@ function copyDialog(r) {
           $('#bucketErr').textContent = err;
           return true;
         }
+        if (checked?.name === bucket && checked.state === 'foreign') {
+          form.bucket.focus();
+          return true;
+        }
         await startJobs([r.id], { [r.id]: bucket });
+      },
+      onClose: () => {
+        clearTimeout(timer);
+        seq++;
       },
     },
   );
   const input = $('#modal input[name=bucket]');
-  const update = () => {
+  const checkEl = $('#bucketCheck');
+  const altsEl = $('#bucketAlts');
+  const showCheck = (res) => {
+    altsEl.hidden = true;
+    altsEl.innerHTML = '';
+    input.classList.toggle('invalid', Boolean($('#bucketErr').textContent) || res?.state === 'foreign');
+    const set = (cls, text) => {
+      checkEl.className = cls;
+      checkEl.textContent = text;
+    };
+    switch (res?.state) {
+      case undefined:
+        return set('', '');
+      case 'checking':
+        return set('', 'Проверяю, свободно ли имя…');
+      case 'missing':
+        return set('ok', '✓ Имя свободно — бакет будет создан.');
+      case 'mine': {
+        const owner = owners.get(res.name);
+        return set('warn', `Бакет уже есть в вашем каталоге${owner && owner !== r.name ? ` (в нём копия «${owner}»)` : ''} — его содержимое заменится сборкой «${r.name}».`);
+      }
+      case 'foreign':
+        set('err', '✗ Имя занято: бакет с таким именем уже есть в Yandex Cloud у другого владельца. Выберите другое.');
+        $('#urlPreview').textContent = '—';
+        if (res.alternatives?.length) {
+          altsEl.innerHTML = `<span>Свободные имена:</span>${res.alternatives.map((n) => `<button type="button" class="chip" data-alt="${esc(n)}">${esc(n)}</button>`).join('')}`;
+          altsEl.hidden = false;
+        }
+        return;
+      case 'invalid':
+        return set('err', res.error);
+      default:
+        return set('', `Не удалось проверить имя (${res.error}) — программа проверит его перед сборкой.`);
+    }
+  };
+  const runCheck = async (name) => {
+    const my = ++seq;
+    let res;
+    try {
+      res = await api(`/api/bucket-check?name=${encodeURIComponent(name)}&projectId=${encodeURIComponent(r.id)}`);
+    } catch (err) {
+      res = { name, state: 'error', error: err.message };
+    }
+    if (my !== seq) return; // пока ждали ответа, имя уже поменяли
+    checked = res;
+    showCheck(res);
+  };
+  const update = (delay = 400) => {
     const v = input.value.trim();
     const err = validateBucketName(v);
     $('#bucketErr').textContent = err;
-    input.classList.toggle('invalid', Boolean(err));
     $('#urlPreview').textContent = err ? '—' : siteUrlFor(v);
+    clearTimeout(timer);
+    seq++;
+    checked = null;
+    if (err) return showCheck(null);
+    showCheck({ name: v, state: 'checking' });
+    timer = setTimeout(() => runCheck(v), delay);
   };
-  input.addEventListener('input', update);
-  update();
+  input.addEventListener('input', () => update());
+  altsEl.addEventListener('click', (e) => {
+    const alt = e.target.closest('[data-alt]');
+    if (!alt) return;
+    input.value = alt.dataset.alt;
+    update(0);
+    input.focus();
+  });
+  update(0);
   input.focus();
   input.select();
 }

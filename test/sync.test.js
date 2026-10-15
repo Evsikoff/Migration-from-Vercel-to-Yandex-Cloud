@@ -13,6 +13,7 @@ const { Job } = await import('../src/jobs.js');
 const { S3Client } = await import('../src/s3.js');
 const { VercelClient } = await import('../src/vercel.js');
 const { buildOverview, scanBuckets } = await import('../src/overview.js');
+const { App } = await import('../src/app.js');
 
 function cliFixture() {
   const f = makeFixture();
@@ -107,7 +108,7 @@ test('занятое имя бакета обнаруживается до сб�
     recordSync: async () => {},
   };
   const job = new Job({ projectId: 'prj_static', projectName: 'landing', teamId: 'team_test', bucket: 'taken-name', mode: 'copy' });
-  await assert.rejects(runSync(job, ctx), /занято/);
+  await assert.rejects(runSync(job, ctx), (err) => /занято/.test(err.message) && err.code === 'bucket-unavailable');
   assert.ok(!vercelMock.fixture.requests.some((r) => r.includes('/files')), 'исходники не скачивались');
 });
 
@@ -129,4 +130,37 @@ test('чужой бакет, открытый всем на чтение, не �
   await assert.rejects(runSync(job, ctx), /занято другим владельцем/);
   assert.ok(!vercelMock.fixture.requests.some((r) => r.includes('/files')), 'исходники не скачивались');
   assert.deepEqual(s3Mock.log.filter((r) => !/^(GET|HEAD) /.test(r)), [], 'в чужой бакет ничего не записывалось');
+});
+
+test('проверка имени бакета в диалоге копирования: занято → свободные варианты', async (t) => {
+  const s3Mock = await startMockS3({ foreign: ['loona-evsikoffs-projects'], publicForeign: ['loona', 'loona-site'] });
+  t.after(() => s3Mock.server.close());
+  const s3 = new S3Client({ accessKeyId: 'AKID', secretAccessKey: 'secret', endpoint: s3Mock.url });
+  await s3.createBucket('my-bucket');
+  const app = new App();
+  app.clients = async () => ({ s3 });
+  app.cache.vercel = {
+    projects: [{ id: 'prj_loona', name: 'loona', domains: ['loona-seven.vercel.app', 'loona-evsikoffs-projects.vercel.app', 'loona-git-main-evsikoffs-projects.vercel.app'] }],
+  };
+  assert.deepEqual(await app.checkBucketName('loona', 'prj_loona'), { name: 'loona', state: 'foreign', alternatives: ['loona-seven', 'loona-web', 'loona-app'] });
+  assert.deepEqual(await app.checkBucketName('loona-seven', 'prj_loona'), { name: 'loona-seven', state: 'missing' });
+  assert.deepEqual(await app.checkBucketName('my-bucket', 'prj_loona'), { name: 'my-bucket', state: 'mine' });
+  assert.equal((await app.checkBucketName('Loona_', 'prj_loona')).state, 'invalid');
+  assert.deepEqual(s3Mock.log.filter((r) => !/^(GET|HEAD) /.test(r)), ['PUT /my-bucket'], 'проверка ничего не создаёт');
+});
+
+test('новое имя из окна копирования заменяет ручную связь проекта', async () => {
+  const app = new App();
+  app.config = { links: { prj_loona: 'loona' } };
+  app.state = { syncs: {} };
+  app.cache = { vercel: { projects: [{ id: 'prj_loona', name: 'loona', teamId: 'team_test', production: { id: 'dpl_loona', createdAt: 1 }, domains: [] }] }, yandex: { buckets: [] }, at: Date.now() };
+  const queued = [];
+  app.jobs.enqueue = (spec) => (queued.push(spec), spec);
+  await app.enqueue({ projectId: 'prj_loona', bucket: 'loona-seven' });
+  assert.equal(app.config.links.prj_loona, 'loona-seven');
+  assert.equal(queued[0].bucket, 'loona-seven');
+  // «Обновить» имени не передаёт — связь остаётся прежней.
+  await app.enqueue({ projectId: 'prj_loona' });
+  assert.equal(app.config.links.prj_loona, 'loona-seven');
+  assert.equal(queued[1].bucket, 'loona-seven');
 });

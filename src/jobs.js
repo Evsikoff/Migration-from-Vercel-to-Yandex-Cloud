@@ -20,6 +20,7 @@ export class Job {
     this.startedAt = null;
     this.finishedAt = null;
     this.error = null;
+    this.errorCode = null; // 'bucket-unavailable' — имя бакета занято, нужно другое
     this.result = null;
     this.warnings = [];
     this.abort = new AbortController();
@@ -56,6 +57,7 @@ export class Job {
       startedAt: this.startedAt,
       finishedAt: this.finishedAt,
       error: this.error,
+      errorCode: this.errorCode,
       result: this.result,
       warnings: this.warnings.slice(-10),
       logSize: this.dropped + this.lines.length,
@@ -147,6 +149,7 @@ export class JobManager {
             job.status = err?.cancelled || job.abort.signal.aborted ? 'canceled' : 'error';
             job.stage = job.status === 'canceled' ? 'Отменено' : 'Ошибка';
             job.error = job.status === 'canceled' ? null : err?.message || String(err);
+            job.errorCode = job.error && err?.code === 'bucket-unavailable' ? err.code : null;
             if (job.error) job.log(job.error, 'error');
           },
         )

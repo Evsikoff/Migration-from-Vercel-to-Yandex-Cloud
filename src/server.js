@@ -59,6 +59,9 @@ async function main() {
       await app.setLink(projectId, bucket || null);
       json(res, 200, await app.overview());
     },
+    'GET /api/bucket-check': async (req, res, url) => {
+      json(res, 200, await app.checkBucketName(String(url.searchParams.get('name') || '').trim(), url.searchParams.get('projectId')));
+    },
     'GET /api/jobs': async (req, res) => json(res, 200, { jobs: app.jobs.list(), busy: app.jobs.busy }),
     'POST /api/jobs': async (req, res) => {
       const { projectId, bucket } = await readBody(req);

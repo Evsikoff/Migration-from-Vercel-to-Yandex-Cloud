@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { cacheControlFor, contentTypeFor, looseName, mapLimit, parseEnvText, suggestBucketName, validateBucketName, websiteUrl } from '../src/util.js';
+import { alternativeBucketNames, cacheControlFor, contentTypeFor, looseName, mapLimit, parseEnvText, suggestBucketName, validateBucketName, websiteUrl } from '../src/util.js';
 
 test('имя бакета по имени проекта', () => {
   assert.equal(suggestBucketName('prokormi'), 'prokormi');
@@ -13,6 +13,13 @@ test('имя бакета по имени проекта', () => {
   for (const n of ['prokormi', '3-dambar', 'the-calculator-coordinates-the-midpoint-of-the-sprite-relative-to-the-background', 'Mixed__Case']) {
     assert.equal(validateBucketName(suggestBucketName(n)), null, n);
   }
+});
+
+test('запасные имена бакета: по адресам сайта на Vercel, затем с суффиксами', () => {
+  const loona = { name: 'loona', domains: ['loona-seven.vercel.app', 'loona-evsikoffs-projects.vercel.app', 'loona-git-main-evsikoffs-projects.vercel.app'] };
+  assert.deepEqual(alternativeBucketNames(loona, 'loona'), ['loona-seven', 'loona-evsikoffs-projects', 'loona-site', 'loona-web', 'loona-app']);
+  assert.deepEqual(alternativeBucketNames(loona, 'loona-seven'), ['loona-evsikoffs-projects', 'loona-site', 'loona-web', 'loona-app']);
+  assert.deepEqual(alternativeBucketNames({ name: 'Shop_App', domains: ['shop.example.ru'] }, 'shop-app'), ['shop-example-ru', 'shop-app-site', 'shop-app-web']);
 });
 
 test('проверка имени бакета', () => {
