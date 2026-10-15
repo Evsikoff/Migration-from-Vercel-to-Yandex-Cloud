@@ -46,11 +46,11 @@ function pipeLines(stream, onLine) {
   });
 }
 
-/** Запускает команду оболочки (cmd.exe в Windows) и пишет её вывод в лог. */
-export function runCommand(command, { cwd, env, log, signal, quiet = false }) {
+/** Запускает команду оболочки (cmd.exe в Windows) и пишет её вывод в лог. display — как показать команду в логе. */
+export function runCommand(command, { cwd, env, log, signal, quiet = false, display = command }) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new CancelledError());
-    if (!quiet) log(`> ${command}`, 'cmd');
+    if (!quiet) log(`> ${display}`, 'cmd');
     const child = spawn(command, {
       cwd,
       env,
@@ -77,7 +77,7 @@ export function runCommand(command, { cwd, env, log, signal, quiet = false }) {
       signal?.removeEventListener('abort', onAbort);
       if (signal?.aborted) return reject(new CancelledError());
       if (code === 0) return resolve(output);
-      const err = new Error(`Команда «${command}» завершилась с кодом ${code}`);
+      const err = new Error(`Команда «${display}» завершилась с кодом ${code}`);
       err.output = output;
       reject(err);
     });
@@ -294,6 +294,71 @@ export function adaptCommand(command, tools, pkg) {
   const declared = String(pkg?.packageManager || '');
   const version = declared.startsWith(`${m[1]}@`) ? declared.split('@')[1].split('+')[0] : m[1] === 'yarn' ? '1' : 'latest';
   return `npx --yes ${m[1]}@${version}${command.slice(m[1].length)}`;
+}
+
+/**
+ * Отделяет переменные в начале команды, как их понимает sh:
+ * «LOONA_INTRO_URL=intro.mp4 npm run build» → { env: { LOONA_INTRO_URL: 'intro.mp4' }, prefix, command: 'npm run build' }.
+ * Кавычки '…', "…" и \ раскрываются. Подстановки ($VAR, `…`) и операторы оболочки умеет разобрать только sh —
+ * тогда, как и без переменных в начале, возвращается null.
+ */
+export function splitEnvAssignments(command) {
+  const s = String(command || '');
+  const env = {};
+  let i = 0;
+  for (;;) {
+    while (s[i] === ' ' || s[i] === '\t') i++;
+    const name = s.slice(i).match(/^([A-Za-z_][A-Za-z0-9_]*)=/);
+    if (!name) break;
+    let j = i + name[0].length;
+    let value = '';
+    while (j < s.length && s[j] !== ' ' && s[j] !== '\t') {
+      const c = s[j];
+      if (c === "'") {
+        const end = s.indexOf("'", j + 1);
+        if (end < 0) return null;
+        value += s.slice(j + 1, end);
+        j = end + 1;
+      } else if (c === '"') {
+        for (j++; s[j] !== '"'; j++) {
+          if (j >= s.length || s[j] === '$' || s[j] === '`') return null;
+          if (s[j] === '\\' && /[\\"$`]/.test(s[j + 1] || '')) j++;
+          value += s[j];
+        }
+        j++;
+      } else if (c === '\\') {
+        if (j + 1 >= s.length) return null;
+        value += s[j + 1];
+        j += 2;
+      } else if (/[$`;&|<>()]/.test(c)) {
+        return null;
+      } else {
+        value += c;
+        j++;
+      }
+    }
+    env[name[1]] = value;
+    i = j;
+  }
+  // Только присваивания («A=1», «A=1 && …») — это переменные самой оболочки, а не окружение команды.
+  if (!Object.keys(env).length || !s.slice(i) || /^[;&|<>()]/.test(s.slice(i))) return null;
+  return { env, prefix: s.slice(0, i), command: s.slice(i) };
+}
+
+/**
+ * Готовит команду установки или сборки к запуску здесь. Vercel выполняет их в sh, а в Windows их выполняет
+ * cmd.exe: запись «NAME=value команда» он не понимает («"NAME" не является внутренней или внешней командой»),
+ * поэтому такие переменные передаются через окружение. pnpm/yarn, которых нет на компьютере, — через npx.
+ * Возвращает { command, env, display }: env добавить к окружению процесса, display — для лога.
+ */
+export function prepareCommand(command, { tools, pkg, platform = process.platform } = {}) {
+  const split = platform === 'win32' ? splitEnvAssignments(command) : null;
+  if (!split) {
+    const adapted = adaptCommand(command, tools, pkg);
+    return { command: adapted, env: {}, display: adapted };
+  }
+  const adapted = adaptCommand(split.command, tools, pkg);
+  return { command: adapted, env: split.env, display: `${split.prefix}${adapted}` };
 }
 
 /** Находит папку с результатом сборки. Без сборки (чистый HTML) — корень проекта или public/. */
