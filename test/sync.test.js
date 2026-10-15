@@ -110,3 +110,23 @@ test('занятое имя бакета обнаруживается до сб�
   await assert.rejects(runSync(job, ctx), /занято/);
   assert.ok(!vercelMock.fixture.requests.some((r) => r.includes('/files')), 'исходники не скачивались');
 });
+
+test('чужой бакет, открытый всем на чтение, не считается своим', async (t) => {
+  const vercelMock = await startMockVercel(cliFixture());
+  const s3Mock = await startMockS3({ publicForeign: ['loona'] });
+  t.after(() => {
+    vercelMock.server.close();
+    s3Mock.server.close();
+  });
+  const ctx = {
+    vercel: new VercelClient('test-token', { baseUrl: vercelMock.url }),
+    s3: new S3Client({ accessKeyId: 'AKID', secretAccessKey: 'secret', endpoint: s3Mock.url }),
+    config: {},
+    tools: {},
+    recordSync: async () => {},
+  };
+  const job = new Job({ projectId: 'prj_static', projectName: 'landing', teamId: 'team_test', bucket: 'loona', mode: 'copy' });
+  await assert.rejects(runSync(job, ctx), /занято другим владельцем/);
+  assert.ok(!vercelMock.fixture.requests.some((r) => r.includes('/files')), 'исходники не скачивались');
+  assert.deepEqual(s3Mock.log.filter((r) => !/^(GET|HEAD) /.test(r)), [], 'в чужой бакет ничего не записывалось');
+});

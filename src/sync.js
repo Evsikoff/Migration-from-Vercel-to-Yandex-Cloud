@@ -44,7 +44,7 @@ export async function runSync(job, ctx) {
   job.setStage('Проверка бакета');
   const bucketState = await s3.bucketState(job.bucket);
   if (bucketState === 'foreign') {
-    throw new Error(`Бакет «${job.bucket}» недоступен: имя занято другим владельцем или у сервисного аккаунта нет прав на него. Выберите другое имя.`);
+    throw new Error(`Бакет «${job.bucket}» недоступен: имя занято другим владельцем (имена бакетов общие для всего Yandex Cloud), бакет не в каталоге сервисного аккаунта или у аккаунта нет прав на него. Выберите другое имя.`);
   }
   log(bucketState === 'mine' ? `Бакет ${job.bucket} найден` : `Бакет ${job.bucket} будет создан после успешной сборки`);
   check();

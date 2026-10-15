@@ -32,7 +32,8 @@ export async function ensureBucket(s3, bucket, { state, errorDocument, log }) {
       await s3.putBucketWebsite(bucket, { index: 'index.html', error: errorDocument });
       log(`Включён хостинг сайта (главная — index.html, ошибки — ${errorDocument})`);
     } catch (err) {
-      log(`Не удалось включить хостинг сайта: ${err.message}`, 'warn');
+      const hint = err.status === 403 ? ' Пока хостинг выключен, сайт не откроется: включите его в консоли Yandex Cloud (бакет → «Веб-сайт») или выдайте сервисному аккаунту роль storage.editor.' : '';
+      log(`Не удалось включить хостинг сайта: ${err.message}.${hint}`, 'warn');
     }
   } else if (website?.redirectTo) {
     log(`Бакет настроен на переадресацию всех запросов на ${website.redirectTo} — сайт из бакета не отображается`, 'warn');

@@ -5,7 +5,8 @@ import http from 'node:http';
 const xmlEsc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const xmlUnesc = (s) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
 
-export function startMockS3({ pageSize = 1000, foreign = [] } = {}) {
+// foreign — чужие закрытые бакеты; publicForeign — чужие бакеты, открытые всем на чтение (список, объекты, настройки).
+export function startMockS3({ pageSize = 1000, foreign = [], publicForeign = [] } = {}) {
   const buckets = new Map(); // name → { acl, website, objects: Map(key → { body, etag, contentType, cacheControl }) }
   const log = [];
   const server = http.createServer(async (req, res) => {
@@ -36,6 +37,12 @@ export function startMockS3({ pageSize = 1000, foreign = [] } = {}) {
       return send(200, `<?xml version="1.0"?><ListAllMyBucketsResult><Buckets>${list}</Buckets></ListAllMyBucketsResult>`);
     }
     if (foreign.includes(bucketName)) return err(403, 'AccessDenied');
+    if (publicForeign.includes(bucketName)) {
+      if (key === null && req.method === 'HEAD') return send(200);
+      if (key === null && req.method === 'GET' && q.has('website')) return err(404, 'NoSuchWebsiteConfiguration');
+      if (key === null && req.method === 'GET' && q.get('list-type') === '2') return send(200, '<ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>photo.jpg</Key><Size>1</Size><ETag>&quot;x&quot;</ETag></Contents></ListBucketResult>');
+      return err(403, 'AccessDenied');
+    }
     const b = buckets.get(bucketName);
 
     if (key === null) {

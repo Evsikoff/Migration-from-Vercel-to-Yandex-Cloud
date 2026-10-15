@@ -182,13 +182,18 @@ export class S3Client {
     return xmlBlocks(xml, 'Bucket').map((b) => ({ name: xmlValue(b, 'Name'), createdAt: xmlValue(b, 'CreationDate') }));
   }
 
-  /** 'mine' — бакет наш и доступен, 'missing' — такого имени нет, 'foreign' — имя занято (или нет прав). */
+  /**
+   * 'mine' — бакет наш и доступен, 'missing' — такого имени нет, 'foreign' — имя занято (или нет прав).
+   * HEAD отвечает 200 и на чужой бакет с открытым всем списком объектов, поэтому свой бакет должен быть
+   * ещё и в списке бакетов каталога сервисного аккаунта.
+   */
   async bucketState(bucket) {
     const res = await this.request({ method: 'HEAD', bucket });
-    if (res.status === 200) return 'mine';
     if (res.status === 404) return 'missing';
     if (res.status === 403 || res.status === 301) return 'foreign';
-    throw errorFromResponse(res, '', `Проверка бакета ${bucket}`);
+    if (res.status !== 200) throw errorFromResponse(res, '', `Проверка бакета ${bucket}`);
+    const listed = await this.listBuckets().catch(() => null);
+    return !listed || listed.some((b) => b.name === bucket) ? 'mine' : 'foreign';
   }
 
   async createBucket(bucket, { acl } = {}) {
