@@ -90,17 +90,26 @@ export function runCommand(command, { cwd, env, log, signal, quiet = false, disp
 const GIT_ENV = process.platform === 'win32' ? {} : { GIT_TERMINAL_PROMPT: '0' };
 // Git для Windows по умолчанию не работает с путями длиннее 260 символов: если программа лежит глубоко
 // (например, в «Загрузках» в дважды вложенной распакованной папке), fetch падает на
-// .git/objects/pack/pack-<sha>.keep с «Filename too long». core.longpaths снимает ограничение;
-// через -c настройка передаётся и дочерним процессам git (submodule, lfs).
-const GIT_OPTS = process.platform === 'win32' ? '-c core.longpaths=true ' : '';
+// .git/objects/pack/pack-<sha>.keep с «Filename too long». core.longpaths снимает ограничение.
+// gc.auto=0 и maintenance.auto=false: после fetch git может запустить фоновое обслуживание репозитория,
+// которое берёт те же замки (shallow.lock и др.), что и следующая наша команда. Рабочей папке оно не нужно.
+// Через -c настройки передаются и дочерним процессам git (submodule, lfs).
+const GIT_OPTS = `${process.platform === 'win32' ? '-c core.longpaths=true ' : ''}-c gc.auto=0 -c maintenance.auto=false `;
+
+// «Unable to create '…/shallow.lock': File exists» (index.lock, refs/…/*.lock) и «could not lock config file …: File exists».
+const GIT_LOCK_RE = /Unable to create '([^']+?\.lock)': File exists|could not lock config file .*File exists/i;
+// Обрыв связи или сбой сети: такую команду стоит повторить, а не переходить к скачиванию всей истории ветки.
+const GIT_NETWORK_RE =
+  /RPC failed|early EOF|unexpected disconnect|hung up unexpectedly|Connection (?:was )?reset|Connection refused|timed? ?out|Could not resolve (?:host|proxy)|Failed to connect|Recv failure|Send failure|SSL|schannel|GnuTLS|HTTP\/2 stream|curl \d+|bad pack header|index-pack (?:failed|died)|invalid index-pack output|transfer closed|Empty reply from server/i;
 
 /**
  * Удаляет замки, брошенные прерванным git. Пока git работает, он держит файлы-замки (shallow.lock, index.lock,
  * refs/…/*.lock) и удаляет их при выходе. Если git убит — отмена задания (taskkill /F), закрытое окно программы,
- * выключение компьютера, — замок остаётся, и все следующие команды в репозитории падают с
+ * выключение компьютера, — или в Windows не смог удалить замок при выходе (файл в этот момент держал дочерний
+ * процесс или антивирус), замок остаётся, и все следующие команды в репозитории падают с
  * «Unable to create '…/shallow.lock': File exists». Рабочая папка принадлежит одному заданию (очередь не запускает
- * два задания одного проекта), поэтому замок, найденный до запуска git, — остаток прерванного процесса.
- * Возвращает пути удалённых замков относительно .git.
+ * два задания одного проекта), а git-команды задания идут по очереди, поэтому замок, найденный между ними, —
+ * остаток завершившегося процесса. Возвращает пути удалённых замков относительно .git.
  */
 export async function removeStaleGitLocks(gitDir) {
   const removed = [];
@@ -123,9 +132,64 @@ export async function removeStaleGitLocks(gitDir) {
   return removed;
 }
 
-export async function gitCheckout({ cloneUrl, sha, ref, dir, log, signal }) {
+function pause(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new CancelledError());
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new CancelledError());
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/**
+ * Возвращает функцию запуска git-команд в репозитории dir, которая переживает брошенные замки
+ * (ждёт, убирает замок, повторяет) и обрывы связи (повторяет с паузой). Ошибка обрыва связи помечается err.network.
+ */
+export function gitRunner({ dir, log, signal, retryDelay = 2000, attempts = 3 }) {
   const env = { ...process.env, ...GIT_ENV };
-  const git = (args, opts = {}) => runCommand(`git ${GIT_OPTS}${args}`, { cwd: dir, env, log, signal, ...opts });
+  const gitDir = path.join(dir, '.git');
+  return async function git(args) {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        // В логе — команда без служебных -c: они одинаковы для всех вызовов.
+        return await runCommand(`git ${GIT_OPTS}${args}`, { cwd: dir, env, log, signal, display: `git ${args}` });
+      } catch (err) {
+        if (err.cancelled) throw err;
+        const text = (err.output || []).join('\n');
+        const lock = text.match(GIT_LOCK_RE);
+        err.network = !lock && GIT_NETWORK_RE.test(text);
+        if (attempt >= attempts || !(lock || err.network)) throw err;
+        if (lock) {
+          // Даём завершиться процессу, который мог ещё держать замок, и убираем его.
+          await pause(retryDelay, signal);
+          // Замок назван в сообщении git; он может быть и вне .git рабочей папки (подмодуль) — но не вне dir.
+          const lockFile = lock[1] ? path.resolve(lock[1]) : null;
+          const rel = lockFile ? path.relative(dir, lockFile) : '';
+          const inside = rel && !rel.startsWith('..') && !path.isAbsolute(rel);
+          const named = inside && (await fsp.rm(lockFile, { force: true }).then(() => true, () => false)) ? [rel.split(path.sep).join('/')] : [];
+          const removed = [...named, ...(await removeStaleGitLocks(gitDir)).map((r) => `.git/${r}`)];
+          if (!removed.length) throw err;
+          log(`Убран замок, брошенный предыдущей командой git: ${removed.join(', ')}. Повторяю…`, 'warn');
+        } else {
+          const wait = retryDelay * 2 ** attempt;
+          log(`Связь с сервером git оборвалась, повторяю через ${Math.round(wait / 1000)} с (попытка ${attempt + 1} из ${attempts})…`, 'warn');
+          await pause(wait, signal);
+          // В Windows git, упавший на обрыве связи, может не успеть убрать свои замки.
+          await removeStaleGitLocks(gitDir);
+        }
+      }
+    }
+  };
+}
+
+export async function gitCheckout({ cloneUrl, sha, ref, dir, log, signal, retryDelay }) {
+  const git = gitRunner({ dir, log, signal, retryDelay });
   await fsp.mkdir(dir, { recursive: true });
   const gitDir = path.join(dir, '.git');
   if (!(await exists(gitDir))) {
@@ -142,6 +206,11 @@ export async function gitCheckout({ cloneUrl, sha, ref, dir, log, signal }) {
     await git(`fetch --depth 1 --no-tags origin ${target}`);
   } catch (err) {
     if (err.cancelled || !sha) throw err;
+    if (err.network) {
+      // История ветки весит больше одного коммита — при нестабильной связи она тем более не скачается.
+      const host = URL.canParse?.(cloneUrl) ? new URL(cloneUrl).host : '';
+      throw new Error(`Не удалось скачать исходники${host ? ` с ${host}` : ''}: связь обрывается (подробности — в сообщениях git выше). Проверьте интернет, VPN или прокси и запустите копирование ещё раз.`);
+    }
     log('Не удалось скачать коммит напрямую, скачиваю историю ветки…', 'warn');
     await git(`fetch --depth 300 --no-tags origin ${ref || 'HEAD'}`);
   }

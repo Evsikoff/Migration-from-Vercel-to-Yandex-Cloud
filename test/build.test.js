@@ -3,8 +3,9 @@ import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import net from 'node:net';
 import { pathToFileURL } from 'node:url';
-import { adaptCommand, buildEnvFrom, collectOutputFiles, detectBuild, gitCheckout, isolateFromOuterPostcss, makeIgnoreMatcher, prepareCommand, removeStaleGitLocks, resolveOutputDir, runCommand, splitEnvAssignments } from '../src/build.js';
+import { adaptCommand, buildEnvFrom, collectOutputFiles, detectBuild, gitCheckout, gitRunner, isolateFromOuterPostcss, makeIgnoreMatcher, prepareCommand, removeStaleGitLocks, resolveOutputDir, runCommand, splitEnvAssignments } from '../src/build.js';
 import { exists } from '../src/util.js';
 
 async function tree(files) {
@@ -203,4 +204,45 @@ test('замки, брошенные прерванным git, не мешают
   assert.equal(await fsp.readFile(path.join(dir, 'index.html'), 'utf8'), 'v2');
   assert.ok(lines.some((l) => /замки.*shallow\.lock/.test(l)), lines.join('\n'));
   assert.deepEqual(await removeStaleGitLocks(gitDir), []);
+});
+
+test('замок, брошенный упавшей командой git посреди задания, убирается, и команда повторяется', async () => {
+  const dir = await tree({ 'index.html': 'v1' });
+  const lines = [];
+  const git = gitRunner({ dir, log: (l) => lines.push(l), retryDelay: 10 });
+  await git('init -q');
+  await git('add -A');
+  await git('-c user.name=t -c user.email=t@t commit -q -m one');
+  // Как в Windows после обрыва fetch: git вышел, а его замки остались.
+  await fsp.writeFile(path.join(dir, '.git', 'index.lock'), '');
+  await fsp.writeFile(path.join(dir, '.git', 'shallow.lock'), '');
+  await git('checkout -q --force HEAD');
+  assert.ok(lines.some((l) => /Unable to create .*index\.lock/.test(l)), lines.join('\n'));
+  assert.ok(lines.some((l) => /Убран замок.*\.git\/index\.lock.*\.git\/shallow\.lock/.test(l)), lines.join('\n'));
+  // Замок конфига git описывает другими словами — его тоже узнаём.
+  await fsp.writeFile(path.join(dir, '.git', 'config.lock'), '');
+  await git('remote add origin https://example.com/x.git');
+  assert.equal((await git('remote get-url origin')).at(-1), 'https://example.com/x.git');
+});
+
+test('при обрыве связи коммит скачивается заново, а не вся история ветки', async (t) => {
+  // Сервер, который рвёт каждое соединение, — как нестабильная связь с GitHub.
+  let connections = 0;
+  const server = net.createServer((socket) => {
+    connections++;
+    socket.resetAndDestroy();
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const dir = path.join(await fsp.mkdtemp(path.join(os.tmpdir(), 'v2yc-')), 'src');
+  const lines = [];
+  const cloneUrl = `http://127.0.0.1:${server.address().port}/org/repo.git`;
+  await assert.rejects(
+    gitCheckout({ cloneUrl, sha: 'fd8b30099cf62a852c0076191f5550132f978364', ref: 'main', dir, log: (l) => lines.push(l), retryDelay: 10 }),
+    /Не удалось скачать исходники с 127\.0\.0\.1:\d+: связь обрывается/,
+  );
+  assert.equal(lines.filter((l) => /^> git .*fetch --depth 1/.test(l)).length, 3, lines.join('\n'));
+  assert.ok(lines.some((l) => /повторяю через/.test(l)), lines.join('\n'));
+  assert.ok(!lines.some((l) => /--depth 300/.test(l)), lines.join('\n'));
+  assert.ok(connections >= 3);
 });
