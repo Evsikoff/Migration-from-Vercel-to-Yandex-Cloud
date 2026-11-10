@@ -3,7 +3,8 @@ import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { adaptCommand, buildEnvFrom, collectOutputFiles, detectBuild, isolateFromOuterPostcss, makeIgnoreMatcher, prepareCommand, resolveOutputDir, runCommand, splitEnvAssignments } from '../src/build.js';
+import { pathToFileURL } from 'node:url';
+import { adaptCommand, buildEnvFrom, collectOutputFiles, detectBuild, gitCheckout, isolateFromOuterPostcss, makeIgnoreMatcher, prepareCommand, removeStaleGitLocks, resolveOutputDir, runCommand, splitEnvAssignments } from '../src/build.js';
 import { exists } from '../src/util.js';
 
 async function tree(files) {
@@ -168,4 +169,38 @@ test('посторонний конфиг PostCSS выше рабочей пап
   const outside = await isolateFromOuterPostcss(src);
   assert.deepEqual(outside.filter((f) => f.startsWith(root)), []);
   assert.equal(await exists(guard), outside.length > 0);
+});
+
+test('замки, брошенные прерванным git, не мешают следующему скачиванию', async () => {
+  // Репозиторий-источник с двумя коммитами — как GitHub, откуда программа забирает коммит продакшн-деплоя.
+  const origin = await tree({ 'index.html': 'v1' });
+  const sh = (cmd) => runCommand(cmd, { cwd: origin, env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1' }, log: () => {}, quiet: true });
+  const commit = async (msg) => {
+    await sh(`git -c user.name=t -c user.email=t@t commit -q -m ${msg}`);
+    return (await sh('git rev-parse HEAD'))[0];
+  };
+  await sh('git init -q');
+  await sh('git add -A');
+  const first = await commit('one');
+  const cloneUrl = pathToFileURL(origin).href;
+  const dir = path.join(await fsp.mkdtemp(path.join(os.tmpdir(), 'v2yc-')), 'src');
+  const lines = [];
+  const log = (l) => lines.push(l);
+  await gitCheckout({ cloneUrl, sha: first, ref: 'main', dir, log });
+  assert.equal(await fsp.readFile(path.join(dir, 'index.html'), 'utf8'), 'v1');
+
+  // git убит посреди fetch и checkout (отмена задания, закрытое окно): замки остались.
+  await fsp.writeFile(path.join(origin, 'index.html'), 'v2');
+  await sh('git add -A');
+  const second = await commit('two');
+  const gitDir = path.join(dir, '.git');
+  for (const rel of ['shallow.lock', 'index.lock', 'config.lock', 'refs/heads/main.lock']) {
+    await fsp.mkdir(path.dirname(path.join(gitDir, rel)), { recursive: true });
+    await fsp.writeFile(path.join(gitDir, rel), '');
+  }
+  lines.length = 0;
+  await gitCheckout({ cloneUrl, sha: second, ref: 'main', dir, log });
+  assert.equal(await fsp.readFile(path.join(dir, 'index.html'), 'utf8'), 'v2');
+  assert.ok(lines.some((l) => /замки.*shallow\.lock/.test(l)), lines.join('\n'));
+  assert.deepEqual(await removeStaleGitLocks(gitDir), []);
 });

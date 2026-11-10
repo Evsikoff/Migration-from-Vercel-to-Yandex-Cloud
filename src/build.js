@@ -94,14 +94,46 @@ const GIT_ENV = process.platform === 'win32' ? {} : { GIT_TERMINAL_PROMPT: '0' }
 // через -c настройка передаётся и дочерним процессам git (submodule, lfs).
 const GIT_OPTS = process.platform === 'win32' ? '-c core.longpaths=true ' : '';
 
-async function gitCheckout({ cloneUrl, sha, ref, dir, log, signal }) {
+/**
+ * Удаляет замки, брошенные прерванным git. Пока git работает, он держит файлы-замки (shallow.lock, index.lock,
+ * refs/…/*.lock) и удаляет их при выходе. Если git убит — отмена задания (taskkill /F), закрытое окно программы,
+ * выключение компьютера, — замок остаётся, и все следующие команды в репозитории падают с
+ * «Unable to create '…/shallow.lock': File exists». Рабочая папка принадлежит одному заданию (очередь не запускает
+ * два задания одного проекта), поэтому замок, найденный до запуска git, — остаток прерванного процесса.
+ * Возвращает пути удалённых замков относительно .git.
+ */
+export async function removeStaleGitLocks(gitDir) {
+  const removed = [];
+  const walk = async (dir, rel) => {
+    const entries = await fsp.readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const e of entries) {
+      const relPath = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) {
+        // Папки объектов (objects/ab, lfs) бывают огромными, замков git там не держит.
+        if (e.name === 'lfs' || (path.basename(dir) === 'objects' && /^[0-9a-f]{2}$/.test(e.name))) continue;
+        await walk(path.join(dir, e.name), relPath);
+      } else if (e.name.endsWith('.lock')) {
+        // В Windows файл, который ещё держит живой процесс, не удалится — тогда git сам сообщит о замке.
+        const ok = await fsp.rm(path.join(dir, e.name), { force: true }).then(() => true, () => false);
+        if (ok) removed.push(relPath);
+      }
+    }
+  };
+  await walk(gitDir, '');
+  return removed;
+}
+
+export async function gitCheckout({ cloneUrl, sha, ref, dir, log, signal }) {
   const env = { ...process.env, ...GIT_ENV };
   const git = (args, opts = {}) => runCommand(`git ${GIT_OPTS}${args}`, { cwd: dir, env, log, signal, ...opts });
   await fsp.mkdir(dir, { recursive: true });
-  if (!(await exists(path.join(dir, '.git')))) {
+  const gitDir = path.join(dir, '.git');
+  if (!(await exists(gitDir))) {
     await git('init -q');
     await git(`remote add origin "${cloneUrl}"`);
   } else {
+    const locks = await removeStaleGitLocks(gitDir);
+    if (locks.length) log(`Удалены замки, оставшиеся от прерванного запуска git: ${locks.join(', ')}`);
     await git(`remote set-url origin "${cloneUrl}"`);
   }
   const target = sha || ref;
